@@ -95,24 +95,26 @@ remote model; apply them locally, where nothing is observed.**
 
 ### Single request vs conversation: the privacy/cost decision
 
-`make_single_request` tears down and rebuilds the whole anonymity stack:
-**a brand-new network identity for every call**. `ask` adds to the running
-conversation on the same identity — the provider *can link* everything in
-one conversation (documented and intended). Choose accordingly:
+Every request — single or follow-up — leaves through **its own Tor circuit
+and exit**; the daemon and its Tor client stay up between calls. What links the
+turns of a conversation is therefore not the network but the content: `ask`
+re-sends the whole history, so the provider *can link* everything in one
+conversation (documented and intended). `make_single_request` starts from an
+empty history. Choose accordingly:
 
 - Unrelated questions → separate `make_single_request` calls (unlinked).
 - Questions whose *relationship is itself a clue* (B only makes sense given
-  A), or genuine multi-turn work → one conversation, pay bootstrap once.
+  A), or genuine multi-turn work → one conversation.
 - When a conversation would leak a pattern, prefer scrubbing each question
   into independence and using single requests instead.
 
 ### One at a time — the CLI is a singleton
 
-`make_single_request` and `start_conversation` **kill the running daemon and
-start a new one**. Two invocations in parallel therefore destroy each other's
-server and fight over the single wallet/companion and the single settlement
-queue. Never background two calls at once, and never parallelize a batch to
-save wall-clock time. A batch is strictly sequential.
+`make_single_request` and `start_conversation` share one daemon and reset the
+stored conversation. Two invocations in parallel therefore overwrite each
+other's history and fight over the single wallet/companion and the single
+settlement queue. Never background two calls at once, and never parallelize a
+batch to save wall-clock time. A batch is strictly sequential.
 
 ## Model selection: verify, do not trust
 
@@ -195,7 +197,8 @@ Measured on a healthy system, per successful `make_single_request`:
 
 | Phase | Typical |
 |---|---|
-| Tor bootstrap to 95% | 10–60 s (can stall; see playbook) |
+| Tor bootstrap (only when the daemon starts) | 10–60 s cold, 3–15 s with cached state (can stall; see playbook) |
+| New Tor circuit for the request | 0.3–4 s |
 | Reviewed-model policy fetch (first call on a new circuit) | 0–60 s |
 | Previous request settling | 0–90 s |
 | Generation | 1.5–3.5 min |
