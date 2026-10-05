@@ -12,12 +12,13 @@
 # /tmp/zkapi-tor-cli.<uid>/ — the script itself is stateless between calls.
 #
 # Semantics:
-#   * make_single_request and start_conversation always run against a FRESH
-#     server: kill any running one, relaunch zkapi-serve-tor.sh (new throwaway
-#     Tor client => new network identity), wait for the API, then ask.
+#   * make_single_request and start_conversation reset the conversation and
+#     ask; the daemon and its Tor client keep running (started only if absent)
+#     and every request already leaves through its own Tor circuit (new exit).
 #   * ask adds to the current conversation and does NOT restart anything.
 #   * default model: openai/gpt-6-astra-pro (change with set_model).
 set -uo pipefail
+umask 077   # conversation history and server log are private to this user
 
 here="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 # Repo-local .config/zkapi-clientd wins if present (portable wallet backup);
@@ -39,15 +40,15 @@ SETTLE_TIMEOUT="${ZKAPI_TORCLI_SETTLE_TIMEOUT:-180}"
 CONFIG_DIR="${ZKAPI_CLIENTD_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/zkapi-clientd}"
 COMPANION="http://127.0.0.1:8790"
 
-mkdir -p "$STATE_DIR" || exit 1
+mkdir -p "$STATE_DIR" && chmod 700 "$STATE_DIR" || exit 1
 
 die() { echo "zkapi-tor-cli: $*" >&2; exit 1; }
 
-api_up() { curl -sf -m 25 "$API/models" -o /dev/null 2>/dev/null; }
+# /healthz is answered locally. /v1/models would re-fetch the reviewed policy
+# over a fresh Tor circuit (up to 60s) and a timeout here would read as "down".
+api_up() { curl -sf -m 5 "${API%/v1}/healthz" -o /dev/null 2>/dev/null; }
 
-server_running() {
-  [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null && api_up
-}
+server_running() { api_up; }
 
 stop_server() {
   [ -f "$PID_FILE" ] || return 0
@@ -228,12 +229,12 @@ usage() {
 case "${1:-}" in
   make_single_request)
     [ $# -ge 2 ] || die "usage: $0 make_single_request \"question\""
-    stop_server; start_server; ensure_ready; warm_policy || true
+    rm -f "$CONV_FILE"; server_running || start_server; ensure_ready; warm_policy || true
     run_chat fresh "$2"
     ;;
   start_conversation)
     [ $# -ge 2 ] || die "usage: $0 start_conversation \"first message\""
-    stop_server; start_server; ensure_ready; warm_policy || true
+    rm -f "$CONV_FILE"; server_running || start_server; ensure_ready; warm_policy || true
     run_chat fresh "$2"
     ;;
   ask)
@@ -243,8 +244,8 @@ case "${1:-}" in
     run_chat append "$2"
     ;;
   list_models)
-    server_running || start_server
-    curl -sf -m 15 "$API/models" | python3 -c 'import json,sys
+    server_running || start_server; warm_policy || true
+    curl -sf -m 40 "$API/models" | python3 -c 'import json,sys
 for m in json.load(sys.stdin)["data"]: print(m["id"])'
     ;;
   set_model)
