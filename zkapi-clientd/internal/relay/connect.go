@@ -17,7 +17,14 @@ import (
 
 // ConnectProxy gives the Rust prover the same direct, Wisp, or SOCKS5 route as Go while
 // enforcing HTTPS-only access. It accepts authenticated CONNECT only, and
-// neither sees nor terminates the destination's TLS session.
+// neither sees nor terminates the destination's TLS session. Over SOCKS5 the
+// bridge presents one random credential for the life of the process: the
+// companion's lease, verifier, indexer, and RPC connections may share circuits
+// with each other (Tor still rotates them after MaxCircuitDirtiness) but never
+// with inference traffic, which presents a fresh credential per connection.
+// The companion carries no prompt content and its lease flow runs several
+// short-deadline requests in sequence; giving each its own circuit made that
+// flow fail against live Tor, while one warm circuit keeps it inside its deadlines.
 type ConnectProxy struct {
 	URL    string // contains a process-local credential; do not log
 	server *http.Server
@@ -25,7 +32,11 @@ type ConnectProxy struct {
 }
 
 func StartConnectProxy(ctx context.Context, relayURL string) (*ConnectProxy, error) {
-	dialContext, err := destinationDialer(relayURL)
+	username, socksPassword, err := socks5Credential()
+	if err != nil {
+		return nil, err
+	}
+	dialContext, err := routeDialer(relayURL, func() (string, string, error) { return username, socksPassword, nil })
 	if err != nil {
 		return nil, err
 	}

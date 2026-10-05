@@ -48,8 +48,15 @@ func NewClient(relayURL string) (*http.Client, error) {
 	}, nil
 }
 
-// destinationDialer shares the selected route with the companion's HTTPS bridge.
+// destinationDialer selects the inference route. Over SOCKS5 every dial presents
+// a fresh credential, so every connection is its own Tor circuit.
 func destinationDialer(relayURL string) (func(context.Context, string, string) (net.Conn, error), error) {
+	return routeDialer(relayURL, socks5Credential)
+}
+
+// routeDialer shares the selected route with the companion's HTTPS bridge; the
+// credential source decides which SOCKS5 connections may share a circuit.
+func routeDialer(relayURL string, credential func() (string, string, error)) (func(context.Context, string, string) (net.Conn, error), error) {
 	if relayURL == "" {
 		return (&net.Dialer{Timeout: 20 * time.Second}).DialContext, nil
 	}
@@ -64,7 +71,11 @@ func destinationDialer(relayURL string) (func(context.Context, string, string) (
 			return nil, errors.New("SOCKS5 proxy must be a numeric loopback address and port without credentials or path")
 		}
 		return func(ctx context.Context, network, address string) (net.Conn, error) {
-			return dialSOCKS5(ctx, u.Host, network, address)
+			username, password, err := credential()
+			if err != nil {
+				return nil, err
+			}
+			return dialSOCKS5(ctx, u.Host, network, address, username, password)
 		}, nil
 	}
 	if u.Scheme != "wss" && !(u.Scheme == "ws" && loopback(u.Hostname())) {
